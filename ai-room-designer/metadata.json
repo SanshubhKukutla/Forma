@@ -1,5 +1,4 @@
 {
-  "name": "AI Room Designer",
-  "description": "Redesign your room with AI! Upload an image or provide a sketch, specify your desired vibe, and get a 360-degree view of your dream room with clickable purchase links for new furniture and decor.",
-  "requestFramePermissions": []
+  "name": "Forma",
+  "description": "Transform your space. Upload a room image or sketch, get AI-powered item suggestions with options, select your preferences, and generate a stunning 360° virtual room design to explore."
 }

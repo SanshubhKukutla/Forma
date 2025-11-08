@@ -1,3 +1,4 @@
+// components/ImageInput.tsx
 
 import React, { useState } from 'react';
 

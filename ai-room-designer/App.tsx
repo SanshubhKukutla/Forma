@@ -1,107 +1,196 @@
+// App.tsx
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
+import { RoomDesignFormInputs, SuggestedItem, AppView, InitialSuggestedItem, RoomDesignOutput as RoomDesignOutputType } from './types';
+import { detectAndSuggestItems, generateRoomDesign } from './services/geminiService';
 import RoomDesignForm from './components/RoomDesignForm';
+import ItemSelection from './components/ItemSelection';
 import RoomDesignOutput from './components/RoomDesignOutput';
-import { generateRoomDesign } from './services/geminiService';
-import { RoomDesignFormInputs, DesignResult, SuggestedItem } from './types';
 
 const App: React.FC = () => {
-  const [designResult, setDesignResult] = useState<DesignResult | null>(null);
+  const [currentView, setCurrentView] = useState<AppView>(AppView.FORM);
   const [formInputs, setFormInputs] = useState<RoomDesignFormInputs | null>(null);
+  const [initialSuggestedItems, setInitialSuggestedItems] = useState<InitialSuggestedItem[] | null>(null);
+  const [roomDesignOutput, setRoomDesignOutput] = useState<RoomDesignOutputType | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedItemsFromSelection, setSelectedItemsFromSelection] = useState<SuggestedItem[]>([]); // Items chosen in ItemSelection
 
-  const handleGenerateDesign = useCallback(async (inputs: RoomDesignFormInputs) => {
+  // The `window.aistudio` APIs are typically for specific environments
+  // where user-selected keys are managed. For this app, we rely on the env var.
+  // The `GoogleGenAI` initialization has been moved into the service functions
+  // to ensure it uses the most up-to-date `process.env.API_KEY` for each call.
+  // No explicit `checkApiKey` is needed here for non-Veo models.
+
+  // Handler for the first step: Form Submission -> Item Selection
+  const handleInitialSubmission = useCallback(async (inputs: RoomDesignFormInputs) => {
     setIsLoading(true);
     setError(null);
-    setFormInputs(inputs); // Store inputs for redesigns
-
+    setFormInputs(inputs); // Store form inputs for later use
     try {
-      const result = await generateRoomDesign(
+      const suggestions = await detectAndSuggestItems(
         inputs.roomImage,
-        inputs.roomDimensions,
         inputs.existingObjects,
         inputs.designPrompt,
-        inputs.designVibe,
-        [], // No selected items for initial generation
+        inputs.designVibe
       );
-      setDesignResult({ ...result, selectedItems: [] }); // Initialize selectedItems
-    } catch (err: unknown) {
-      console.error("Failed to generate design:", err);
-      setError((err as Error).message || "An unknown error occurred while generating the design. Please try again.");
-      setDesignResult(null); // Clear previous design on error
+      setInitialSuggestedItems(suggestions);
+      setCurrentView(AppView.ITEM_SELECTION);
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || "Failed to get design suggestions. Please try again.");
     } finally {
       setIsLoading(false);
     }
   }, []);
 
-  const handleRedesign = useCallback(async (newPrompt: string, selectedItems: SuggestedItem[]) => {
-    if (!formInputs || !designResult) {
-      setError("No initial design to refine. Please generate a design first.");
+  // Handler for Item Selection -> Final Image Generation
+  const handleItemSelectionSubmit = useCallback(async (selectedItems: SuggestedItem[]) => {
+    if (!formInputs) {
+      setError("Form inputs are missing. Please go back and resubmit the form.");
+      setCurrentView(AppView.FORM);
       return;
     }
-
     setIsLoading(true);
     setError(null);
-
-    // Combine original design prompt with the new refinement prompt
-    const updatedDesignPrompt = `${formInputs.designPrompt}. ${newPrompt}`;
-    // Also consider the selected items as part of the new prompt instruction
-    const itemsToIncorporate = selectedItems.length > 0
-      ? `Ensure the following items are incorporated into the design: ${selectedItems.map(item => item.name).join(', ')}.`
-      : '';
-    const finalPrompt = `${updatedDesignPrompt} ${itemsToIncorporate}`.trim();
+    setSelectedItemsFromSelection(selectedItems); // Store selected items for redesigns
 
     try {
       const result = await generateRoomDesign(
         formInputs.roomImage,
-        formInputs.roomDimensions,
         formInputs.existingObjects,
-        finalPrompt, // Use the combined prompt with selected items
+        formInputs.designPrompt,
         formInputs.designVibe,
-        selectedItems, // Pass selected items to the service for explicit prompting
+        selectedItems,
       );
-      setDesignResult({ ...result, selectedItems }); // Preserve selected items state
-      // Update the stored form inputs to reflect the new prompt for further refinements
-      setFormInputs(prevInputs => prevInputs ? { ...prevInputs, designPrompt: finalPrompt } : null);
-    } catch (err: unknown) {
-      console.error("Failed to refine design:", err);
-      setError((err as Error).message || "An unknown error occurred while refining the design. Please try again.");
+      setRoomDesignOutput({
+        generatedImageUrl: `data:${result.mimeType};base64,${result.imageBytes}`,
+        selectedItemsForFinalDesign: selectedItems, // Pass through the selected items
+      });
+      setCurrentView(AppView.DESIGN_OUTPUT);
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || "Failed to generate final room design. Please try again.");
     } finally {
       setIsLoading(false);
     }
-  }, [formInputs, designResult]);
+  }, [formInputs]);
+
+  // Handler for Redesign (from Output Page)
+  const handleRedesign = useCallback(async (newPrompt: string, currentSelectedItems: SuggestedItem[]) => {
+    if (!formInputs) {
+      setError("Form inputs are missing. Please go back and resubmit the form.");
+      setCurrentView(AppView.FORM);
+      return;
+    }
+    setIsLoading(true);
+    setError(null);
+
+    // Update the designPrompt with the new prompt for redesign
+    const updatedFormInputs: RoomDesignFormInputs = {
+      ...formInputs,
+      designPrompt: newPrompt, // Use the new prompt for redesign
+    };
+    setFormInputs(updatedFormInputs); // Persist updated prompt for potential future redesigns
+
+    try {
+      const result = await generateRoomDesign(
+        updatedFormInputs.roomImage,
+        updatedFormInputs.existingObjects,
+        updatedFormInputs.designPrompt,
+        updatedFormInputs.designVibe,
+        currentSelectedItems, // Use the already selected items
+      );
+      setRoomDesignOutput({
+        generatedImageUrl: `data:${result.mimeType};base64,${result.imageBytes}`,
+        selectedItemsForFinalDesign: currentSelectedItems,
+      });
+      // Stay on DESIGN_OUTPUT view
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || "Failed to redesign room. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [formInputs]);
+
+  const handleBackToItemSelection = useCallback(() => {
+    setCurrentView(AppView.ITEM_SELECTION);
+    setError(null); // Clear errors
+  }, []);
+
+  const renderContent = () => {
+    switch (currentView) {
+      case AppView.FORM:
+        return (
+          <RoomDesignForm
+            onSubmit={handleInitialSubmission}
+            isLoading={isLoading}
+            initialInputs={formInputs || undefined}
+          />
+        );
+      case AppView.ITEM_SELECTION:
+        if (initialSuggestedItems && formInputs) {
+          return (
+            <ItemSelection
+              initialItems={initialSuggestedItems}
+              onSubmit={handleItemSelectionSubmit}
+              onBack={() => {
+                setCurrentView(AppView.FORM);
+                setError(null);
+              }}
+              isLoading={isLoading}
+              formInputs={formInputs} // Pass formInputs to ItemSelection if needed for back button context
+            />
+          );
+        }
+        return <p className="text-center text-red-500 p-4">Error: Missing item suggestions. Please go back to the form.</p>;
+      case AppView.DESIGN_OUTPUT:
+        if (roomDesignOutput) {
+          return (
+            <RoomDesignOutput
+              designOutput={roomDesignOutput}
+              onRedesign={handleRedesign}
+              isLoading={isLoading}
+              onBackToItemSelection={handleBackToItemSelection}
+            />
+          );
+        }
+        return <p className="text-center text-red-500 p-4">Error: No final design to display. Please go back.</p>;
+      default:
+        return null;
+    }
+  };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-4 bg-gradient-to-br from-indigo-50 to-blue-100">
-      <header className="w-full max-w-4xl text-center mb-8">
-        <h1 className="text-5xl font-extrabold text-indigo-800 leading-tight">AI Room Designer</h1>
-        <p className="mt-3 text-lg text-indigo-600">Transform your space with intelligent design suggestions.</p>
-      </header>
+    <div className="min-h-screen bg-blue-50 flex flex-col items-center justify-center p-4">
+      <h1 className="text-5xl font-extrabold text-indigo-800 my-8">Forma</h1>
+      <p className="text-lg text-gray-700 mb-8 text-center max-w-2xl">
+        Transform your space with intelligent design suggestions.
+      </p>
 
       {error && (
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-6 w-full max-w-3xl" role="alert">
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-6 w-full max-w-2xl" role="alert">
           <strong className="font-bold">Error:</strong>
           <span className="block sm:inline ml-2">{error}</span>
         </div>
       )}
 
+      {isLoading && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50">
+          <div className="text-white text-xl flex items-center">
+            <svg className="animate-spin -ml-1 mr-3 h-8 w-8 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            Processing your request...
+          </div>
+        </div>
+      )}
+
       <main className="flex flex-col md:flex-row w-full max-w-6xl items-start justify-center">
-        <RoomDesignForm onSubmit={handleGenerateDesign} isLoading={isLoading && !designResult} />
-
-        {designResult && (
-          <RoomDesignOutput
-            designResult={designResult}
-            onRedesign={handleRedesign}
-            isLoading={isLoading && !!designResult}
-          />
-        )}
+        {renderContent()}
       </main>
-
-      {/* Sticky Call-to-Action for potential future use or if more interaction points are added */}
-      <footer className="fixed bottom-0 left-0 right-0 bg-indigo-700 text-white p-4 text-center shadow-lg">
-        <p className="text-sm">Powered by Google Gemini API</p>
-      </footer>
     </div>
   );
 };
